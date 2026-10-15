@@ -26,9 +26,13 @@ from sklearn.metrics import (
     accuracy_score, classification_report, confusion_matrix,
     ConfusionMatrixDisplay, precision_score, recall_score, f1_score,
 )
-
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.linear_model import LogisticRegression
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.tree import DecisionTreeClassifier
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +194,7 @@ def make_predictor(model):
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 def main():
     ensure_nltk_data()
 
@@ -206,10 +211,81 @@ def main():
     print("\nTraining model...")
     model = train_and_evaluate(df)
 
+    print("\nComparing models...")
+    compare_models(df)
+
     print("\n=== Sanity checks ===")
     predict_sms = make_predictor(model)
     print(predict_sms("Congratulations! You have won a free iPhone. Click here now."))
     print(predict_sms("Hi, are we meeting tomorrow at 3 PM?"))
+
+
+def compare_models(df, outdir="outputs"):
+    """Train several classifiers on the same split and compare test metrics."""
+    import os, time
+    os.makedirs(outdir, exist_ok=True)
+
+    X = df["clean_message"]
+    y = df["label"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.20, random_state=42, stratify=y
+    )
+
+    # Each entry: (name, classifier, needs_scaled_features?)
+    models = {
+        "Linear SVM":         LinearSVC(C=1),
+        "Naive Bayes":        MultinomialNB(),
+        "Logistic Regression": LogisticRegression(max_iter=1000),
+        "Decision Tree":      DecisionTreeClassifier(random_state=42),
+        "Random Forest":      RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1),
+        "KNN (k=5)":          KNeighborsClassifier(n_neighbors=5),
+    }
+
+    results = []
+    for name, clf in models.items():
+        pipe = Pipeline([
+            ("tfidf", TfidfVectorizer(max_features=5000, ngram_range=(1, 2))),
+            ("clf", clf),
+        ])
+        t0 = time.time()
+        pipe.fit(X_train, y_train)
+        train_time = time.time() - t0
+
+        pred = pipe.predict(X_test)
+
+        results.append({
+            "Model": name,
+            "Accuracy": accuracy_score(y_test, pred),
+            "Precision": precision_score(y_test, pred),
+            "Recall": recall_score(y_test, pred),
+            "F1": f1_score(y_test, pred),
+            "Train (s)": round(train_time, 2),
+        })
+
+    results_df = pd.DataFrame(results).sort_values("F1", ascending=False)
+    print("\n=== Model Comparison ===")
+    print(results_df.to_string(index=False))
+
+    # Bar chart
+    fig, ax = plt.subplots(figsize=(10, 5))
+    metrics = ["Accuracy", "Precision", "Recall", "F1"]
+    x = np.arange(len(results_df))
+    width = 0.2
+    for i, m in enumerate(metrics):
+        ax.bar(x + i * width, results_df[m], width, label=m)
+    ax.set_xticks(x + width * 1.5)
+    ax.set_xticklabels(results_df["Model"], rotation=20, ha="right")
+    ax.set_ylim(0.7, 1.0)
+    ax.set_ylabel("Score")
+    ax.set_title("Classifier Comparison (same TF-IDF, same split)")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(f"{outdir}/model_comparison.png", dpi=120)
+    plt.close(fig)
+
+    return results_df
+
 
 
 if __name__ == "__main__":
